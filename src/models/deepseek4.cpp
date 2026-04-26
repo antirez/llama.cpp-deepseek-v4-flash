@@ -355,10 +355,7 @@ static dsv4_hc_mix dsv4_hc_pre(
         comb = ggml_cont(ctx, comb);
     }
     comb = ggml_reshape_3d(ctx, comb, n_hc, n_hc, n_tokens); // [src_hc, dst_hc, n_tokens]
-    ggml_tensor * x_hdt = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3)); // [hc, n_embd, n_tokens]
-    ggml_tensor * pre_h1t = ggml_reshape_3d(ctx, pre, n_hc, 1, n_tokens);
-    ggml_tensor * y = ggml_mul_mat(ctx, pre_h1t, x_hdt); // [1, n_embd, n_tokens]
-    y = ggml_reshape_2d(ctx, y, n_embd, n_tokens);
+    ggml_tensor * y = ggml_dsv4_hc_weighted_sum(ctx, x, pre);
     return { y, mixes, pre, post, comb };
 }
 
@@ -406,10 +403,7 @@ static ggml_tensor * dsv4_hc_head(
     pre = ggml_add(ctx, pre, dsv4_view_base(ctx, hc_base, n_hc, 0));
     pre = dsv4_add_scalar(ctx, ggml_sigmoid(ctx, pre), hc_eps);
 
-    ggml_tensor * x_hdt = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3));
-    ggml_tensor * pre_h1t = ggml_reshape_3d(ctx, pre, n_hc, 1, n_tokens);
-    ggml_tensor * y = ggml_mul_mat(ctx, pre_h1t, x_hdt);
-    return ggml_reshape_2d(ctx, y, n_embd, n_tokens);
+    return ggml_dsv4_hc_weighted_sum(ctx, x, pre);
 }
 
 static ggml_tensor * dsv4_grouped_out(
@@ -651,6 +645,21 @@ static ggml_tensor * dsv4_pool_decode_state(
             rope_cfg.ext_factor, rope_cfg.attn_factor, rope_cfg.beta_fast, rope_cfg.beta_slow, false);
 }
 
+static dsv4_decode_compressor dsv4_build_compressor_decode_projected(
+        ggml_context       * ctx,
+        ggml_tensor        * kv_cur,
+        ggml_tensor        * sc_cur,
+        ggml_tensor        * prev_kv_state,
+        ggml_tensor        * prev_score_state,
+        ggml_tensor        * norm,
+        int64_t              head_dim,
+        int64_t              n_rot,
+        int64_t              pos,
+        int64_t              compress_ratio,
+        int                  rope_type,
+        const dsv4_rope_cfg & rope_cfg,
+        float                norm_eps);
+
 static dsv4_decode_compressor dsv4_build_compressor_decode(
         ggml_context       * ctx,
         ggml_tensor        * x,
@@ -669,13 +678,38 @@ static dsv4_decode_compressor dsv4_build_compressor_decode(
         float                norm_eps) {
     const dsv4_state_layout layout = dsv4_make_state_layout(compress_ratio, head_dim);
     const int64_t pos_mod = pos % compress_ratio;
-    const int64_t row = compress_ratio == 4 ? compress_ratio + pos_mod : pos_mod;
-    const bool should_compress = (pos + 1) % compress_ratio == 0;
 
     ggml_tensor * kv_cur = ggml_mul_mat(ctx, wkv, x);       // [width, 1]
     ggml_tensor * sc_cur = ggml_mul_mat(ctx, wgate, x);
     ggml_tensor * ape_f  = ape->type == GGML_TYPE_F32 ? ape : ggml_cast(ctx, ape, GGML_TYPE_F32);
     sc_cur = ggml_add(ctx, sc_cur, ggml_view_2d(ctx, ape_f, layout.width, 1, ape_f->nb[1], pos_mod*ape_f->nb[1]));
+
+    return dsv4_build_compressor_decode_projected(ctx,
+            kv_cur, sc_cur,
+            prev_kv_state, prev_score_state,
+            norm,
+            head_dim, n_rot, pos, compress_ratio,
+            rope_type, rope_cfg, norm_eps);
+}
+
+static dsv4_decode_compressor dsv4_build_compressor_decode_projected(
+        ggml_context       * ctx,
+        ggml_tensor        * kv_cur,
+        ggml_tensor        * sc_cur,
+        ggml_tensor        * prev_kv_state,
+        ggml_tensor        * prev_score_state,
+        ggml_tensor        * norm,
+        int64_t              head_dim,
+        int64_t              n_rot,
+        int64_t              pos,
+        int64_t              compress_ratio,
+        int                  rope_type,
+        const dsv4_rope_cfg & rope_cfg,
+        float                norm_eps) {
+    const dsv4_state_layout layout = dsv4_make_state_layout(compress_ratio, head_dim);
+    const int64_t pos_mod = pos % compress_ratio;
+    const int64_t row = compress_ratio == 4 ? compress_ratio + pos_mod : pos_mod;
+    const bool should_compress = (pos + 1) % compress_ratio == 0;
 
     ggml_tensor * row_idx = dsv4_arange_i32(ctx, row, row + 1);
     ggml_tensor * kv_state    = ggml_set_rows(ctx, prev_kv_state,    kv_cur, row_idx);
@@ -729,20 +763,29 @@ static dsv4_decode_compressor dsv4_build_compressor_decode_chunk(
         int                  rope_type,
         const dsv4_rope_cfg & rope_cfg,
         float                norm_eps) {
+    const dsv4_state_layout layout = dsv4_make_state_layout(compress_ratio, head_dim);
+
+    ggml_tensor * kv_all = ggml_mul_mat(ctx, wkv,   x); // [width, n_tokens]
+    ggml_tensor * sc_all = ggml_mul_mat(ctx, wgate, x);
+    ggml_tensor * ape_f  = ape->type == GGML_TYPE_F32 ? ape : ggml_cast(ctx, ape, GGML_TYPE_F32);
+
     ggml_tensor * kv_state    = prev_kv_state;
     ggml_tensor * score_state = prev_score_state;
     ggml_tensor * kv_comp     = nullptr;
 
     for (int64_t i = 0; i < n_tokens; ++i) {
         const llama_pos pos = ubatch.pos ? ubatch.pos[i] : (llama_pos) i;
-        ggml_tensor * xi = ggml_view_2d(ctx, x, x->ne[0], 1, x->nb[1], i*x->nb[1]);
+        const int64_t pos_mod = pos % compress_ratio;
 
-        dsv4_decode_compressor dec = dsv4_build_compressor_decode(ctx, xi,
+        ggml_tensor * kv_cur = ggml_view_2d(ctx, kv_all, layout.width, 1, kv_all->nb[1], i*kv_all->nb[1]);
+        ggml_tensor * sc_cur = ggml_view_2d(ctx, sc_all, layout.width, 1, sc_all->nb[1], i*sc_all->nb[1]);
+        sc_cur = ggml_add(ctx, sc_cur, ggml_view_2d(ctx, ape_f, layout.width, 1, ape_f->nb[1], pos_mod*ape_f->nb[1]));
+
+        dsv4_decode_compressor dec = dsv4_build_compressor_decode_projected(ctx,
+                kv_cur,
+                sc_cur,
                 kv_state,
                 score_state,
-                wkv,
-                wgate,
-                ape,
                 norm,
                 head_dim,
                 n_rot,

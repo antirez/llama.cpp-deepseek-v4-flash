@@ -2275,6 +2275,30 @@ kernel void kernel_dsv4_hc_expand(
     *((device float *) (dst + d*args.nb0 + dst_hc*args.nb1 + t*args.nb2)) = acc;
 }
 
+kernel void kernel_dsv4_hc_weighted_sum(
+        constant ggml_metal_kargs_dsv4_hc_weighted_sum & args,
+        device  const char * x,
+        device  const char * weights,
+        device        char * dst,
+        uint gid [[thread_position_in_grid]]) {
+    const int64_t n_elem = args.n_embd * args.n_tokens;
+    if ((int64_t) gid >= n_elem) {
+        return;
+    }
+
+    const int64_t d = ((int64_t) gid) % args.n_embd;
+    const int64_t t = ((int64_t) gid) / args.n_embd;
+
+    float acc = 0.0f;
+    for (int64_t h = 0; h < args.n_hc; ++h) {
+        const float xv = *((device const float *) (x       + d*args.nb_x0 + h*args.nb_x1 + t*args.nb_x2));
+        const float wv = *((device const float *) (weights + h*args.nb_w0 + t*args.nb_w1));
+        acc += xv * wv;
+    }
+
+    *((device float *) (dst + d*args.nb0 + t*args.nb1)) = acc;
+}
+
 static inline float dsv4_e4m3fn_value(int i) {
     const int exp  = (i >> 3) & 0x0f;
     const int mant = i & 0x07;

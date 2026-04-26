@@ -11084,6 +11084,54 @@ void ggml_compute_forward_dsv4_hc_split_sinkhorn(
     }
 }
 
+// ggml_compute_forward_dsv4_hc_weighted_sum
+
+void ggml_compute_forward_dsv4_hc_weighted_sum(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * x       = dst->src[0];
+    const ggml_tensor * weights = dst->src[1];
+
+    GGML_ASSERT(x->type       == GGML_TYPE_F32);
+    GGML_ASSERT(weights->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type     == GGML_TYPE_F32);
+    GGML_ASSERT(x->ne[0]       == dst->ne[0]);
+    GGML_ASSERT(x->ne[1]       == weights->ne[0]);
+    GGML_ASSERT(x->ne[2]       == dst->ne[1]);
+    GGML_ASSERT(weights->ne[1] == dst->ne[1]);
+    GGML_ASSERT(x->ne[3]       == 1);
+    GGML_ASSERT(weights->ne[2] == 1);
+    GGML_ASSERT(weights->ne[3] == 1);
+    GGML_ASSERT(dst->ne[2]     == 1);
+    GGML_ASSERT(dst->ne[3]     == 1);
+
+    const int64_t n_embd   = dst->ne[0];
+    const int64_t n_hc     = x->ne[1];
+    const int64_t n_tokens = dst->ne[1];
+    const int64_t n_elem   = n_embd * n_tokens;
+
+    const int64_t i0 = (n_elem * params->ith) / params->nth;
+    const int64_t i1 = (n_elem * (params->ith + 1)) / params->nth;
+
+    const char * x_data = (const char *) x->data;
+    const char * w_data = (const char *) weights->data;
+          char * y_data = (      char *) dst->data;
+
+    for (int64_t i = i0; i < i1; ++i) {
+        const int64_t d = i % n_embd;
+        const int64_t t = i / n_embd;
+
+        float acc = 0.0f;
+        for (int64_t h = 0; h < n_hc; ++h) {
+            const float xv = *(const float *) (x_data + d*x->nb[0] + h*x->nb[1] + t*x->nb[2]);
+            const float wv = *(const float *) (w_data + h*weights->nb[0] + t*weights->nb[1]);
+            acc += xv * wv;
+        }
+
+        *(float *) (y_data + d*dst->nb[0] + t*dst->nb[1]) = acc;
+    }
+}
+
 // ggml_compute_forward_dsv4_hc_expand
 
 void ggml_compute_forward_dsv4_hc_expand(

@@ -324,6 +324,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_dsv4_hc_split_sinkhorn(ctx, idx);
             } break;
+        case GGML_OP_DSV4_HC_WEIGHTED_SUM:
+            {
+                n_fuse = ggml_metal_op_dsv4_hc_weighted_sum(ctx, idx);
+            } break;
         case GGML_OP_DSV4_HC_EXPAND:
             {
                 n_fuse = ggml_metal_op_dsv4_hc_expand(ctx, idx);
@@ -1427,6 +1431,54 @@ int ggml_metal_op_dsv4_hc_split_sinkhorn(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), 2);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[2]), 3);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         4);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, n_tg, 1, 1, nth, 1, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_dsv4_hc_weighted_sum(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    GGML_ASSERT(op->src[0]->type == GGML_TYPE_F32);
+    GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32);
+    GGML_ASSERT(op->type == GGML_TYPE_F32);
+
+    ggml_tensor * x       = op->src[0];
+    ggml_tensor * weights = op->src[1];
+
+    GGML_TENSOR_LOCALS(int64_t,  ne,   op,      ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb,   op,      nb);
+    GGML_TENSOR_LOCALS(uint64_t, nb_x, x,       nb);
+    GGML_TENSOR_LOCALS(uint64_t, nb_w, weights, nb);
+
+    ggml_metal_kargs_dsv4_hc_weighted_sum args = {
+        /*.n_embd   =*/ ne0,
+        /*.n_hc     =*/ x->ne[1],
+        /*.n_tokens =*/ ne1,
+        /*.nb_x0    =*/ nb_x0,
+        /*.nb_x1    =*/ nb_x1,
+        /*.nb_x2    =*/ nb_x2,
+        /*.nb_w0    =*/ nb_w0,
+        /*.nb_w1    =*/ nb_w1,
+        /*.nb0      =*/ nb0,
+        /*.nb1      =*/ nb1,
+    };
+
+    auto pipeline = ggml_metal_library_get_pipeline_dsv4_hc_weighted_sum(lib, op);
+
+    const int64_t n_elem = ne0*ne1;
+    const int nth = std::min<int64_t>(256, std::max<int64_t>(1, n_elem));
+    const int n_tg = (n_elem + nth - 1) / nth;
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(x),       1);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(weights), 2);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),      3);
 
     ggml_metal_encoder_dispatch_threadgroups(enc, n_tg, 1, 1, nth, 1, 1);
 

@@ -18,7 +18,7 @@ namespace {
 
 constexpr uint32_t DSV4_COMPRESSED_KV_STATE_MAGIC   = 0x44535634; // "DSV4"
 constexpr uint32_t DSV4_COMPRESSED_KV_STATE_VERSION = 1;
-constexpr uint32_t DSV4_COMPRESSED_DECODE_UBATCH_MAX = 128;
+constexpr uint32_t DSV4_COMPRESSED_DECODE_UBATCH_MAX = 512;
 
 struct dsv4_row_range {
     uint32_t begin = 0;

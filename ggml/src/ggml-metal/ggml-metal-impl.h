@@ -799,6 +799,19 @@ typedef struct {
     int64_t  n_embd;
     int64_t  n_hc;
     int64_t  n_tokens;
+    uint64_t nb_x0;
+    uint64_t nb_x1;
+    uint64_t nb_x2;
+    uint64_t nb_w0;
+    uint64_t nb_w1;
+    uint64_t nb0;
+    uint64_t nb1;
+} ggml_metal_kargs_dsv4_hc_weighted_sum;
+
+typedef struct {
+    int64_t  n_embd;
+    int64_t  n_hc;
+    int64_t  n_tokens;
     uint64_t nb_block0;
     uint64_t nb_block1;
     uint64_t nb_res0;

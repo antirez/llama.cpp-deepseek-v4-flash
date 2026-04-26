@@ -1059,6 +1059,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "SOLVE_TRI",
     "GATED_DELTA_NET",
     "DSV4_HC_SPLIT_SINKHORN",
+    "DSV4_HC_WEIGHTED_SUM",
     "DSV4_HC_EXPAND",
     "DSV4_FP8_KV_QUANTIZE",
     "DSV4_ROPE_TAIL",
@@ -1079,7 +1080,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1173,6 +1174,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "A X = B, A triangular, solve X",
     "gated_delta_net(q, k, v, g, beta, s)",
     "dsv4_hc_split_sinkhorn(x)",
+    "dsv4_hc_weighted_sum(x)",
     "dsv4_hc_expand(x)",
     "dsv4_fp8_kv_quantize(x)",
     "dsv4_rope_tail(x)",
@@ -1193,7 +1195,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6257,6 +6259,30 @@ struct ggml_tensor * ggml_dsv4_hc_split_sinkhorn(
     result->src[0] = mixes;
     result->src[1] = scale;
     result->src[2] = base;
+
+    return result;
+}
+
+// ggml_dsv4_hc_weighted_sum
+
+struct ggml_tensor * ggml_dsv4_hc_weighted_sum(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * x,
+        struct ggml_tensor  * weights) {
+    GGML_ASSERT(x->type       == GGML_TYPE_F32);
+    GGML_ASSERT(weights->type == GGML_TYPE_F32);
+
+    GGML_ASSERT(x->ne[1] == weights->ne[0]);
+    GGML_ASSERT(x->ne[2] == weights->ne[1]);
+    GGML_ASSERT(x->ne[3] == 1);
+    GGML_ASSERT(weights->ne[2] == 1);
+    GGML_ASSERT(weights->ne[3] == 1);
+
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, x->ne[0], x->ne[2]);
+
+    result->op     = GGML_OP_DSV4_HC_WEIGHTED_SUM;
+    result->src[0] = x;
+    result->src[1] = weights;
 
     return result;
 }
