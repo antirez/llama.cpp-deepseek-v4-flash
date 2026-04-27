@@ -82,6 +82,85 @@ static __global__ void concat_kernel_dim2(const T * x, const T * y, T * dst, con
     }
 }
 
+// F16 contiguous kernels
+static __global__ void concat_f16_dim0(const __half * x, const __half * y, __half * dst, const int ne0, const int ne00) {
+    int nidx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (nidx >= ne0) {
+        return;
+    }
+
+    int offset_dst =
+        nidx +
+        blockIdx.y * ne0 +
+        blockIdx.z * ne0 * gridDim.y;
+
+    if (nidx < ne00) { // src0
+        int offset_src =
+            nidx +
+            blockIdx.y * ne00 +
+            blockIdx.z * ne00 * gridDim.y;
+        dst[offset_dst] = x[offset_src];
+    } else {
+        int offset_src =
+            (nidx - ne00) +
+            blockIdx.y * (ne0 - ne00) +
+            blockIdx.z * (ne0 - ne00) * gridDim.y;
+        dst[offset_dst] = y[offset_src];
+    }
+}
+
+static __global__ void concat_f16_dim1(const __half * x, const __half * y, __half * dst, const int ne0, const int ne01) {
+    int nidx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (nidx >= ne0) {
+        return;
+    }
+
+    int offset_dst =
+        nidx +
+        blockIdx.y * ne0 +
+        blockIdx.z * ne0 * gridDim.y;
+
+    if (blockIdx.y < (unsigned)ne01) { // src0
+        int offset_src =
+            nidx +
+            blockIdx.y * ne0 +
+            blockIdx.z * ne0 * ne01;
+        dst[offset_dst] = x[offset_src];
+    } else {
+        int offset_src =
+            nidx +
+            (blockIdx.y - ne01) * ne0 +
+            blockIdx.z * ne0 * (gridDim.y - ne01);
+        dst[offset_dst] = y[offset_src];
+    }
+}
+
+static __global__ void concat_f16_dim2(const __half * x, const __half * y, __half * dst, const int ne0, const int ne02) {
+    int nidx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (nidx >= ne0) {
+        return;
+    }
+
+    int offset_dst =
+        nidx +
+        blockIdx.y * ne0 +
+        blockIdx.z * ne0 * gridDim.y;
+
+    if (blockIdx.z < (unsigned)ne02) { // src0
+        int offset_src =
+            nidx +
+            blockIdx.y * ne0 +
+            blockIdx.z * ne0 * gridDim.y;
+        dst[offset_dst] = x[offset_src];
+    } else {
+        int offset_src =
+            nidx +
+            blockIdx.y * ne0 +
+            (blockIdx.z - ne02) * ne0 *  gridDim.y;
+        dst[offset_dst] = y[offset_src];
+    }
+}
+
 template <typename T>
 static void concat_kernel_cuda(const T * x, const T * y, T * dst, int ne00, int ne01, int ne02, int ne0, int ne1, int ne2, int dim, cudaStream_t stream) {
     int num_blocks = (ne0 + CUDA_CONCAT_BLOCK_SIZE - 1) / CUDA_CONCAT_BLOCK_SIZE;
@@ -95,6 +174,20 @@ static void concat_kernel_cuda(const T * x, const T * y, T * dst, int ne00, int 
         return;
     }
     concat_kernel_dim2<<<gridDim, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(x, y, dst, ne0, ne02);
+}
+
+static void concat_f16_cuda(const __half * x, const __half * y, __half * dst, int ne00, int ne01, int ne02, int ne0, int ne1, int ne2, int dim, cudaStream_t stream) {
+    int num_blocks = (ne0 + CUDA_CONCAT_BLOCK_SIZE - 1) / CUDA_CONCAT_BLOCK_SIZE;
+    dim3 gridDim(num_blocks, ne1, ne2);
+    if (dim == 0) {
+        concat_f16_dim0<<<gridDim, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(x, y, dst, ne0, ne00);
+        return;
+    }
+    if (dim == 1) {
+        concat_f16_dim1<<<gridDim, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(x, y, dst, ne0, ne01);
+        return;
+    }
+    concat_f16_dim2<<<gridDim, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(x, y, dst, ne0, ne02);
 }
 
 // non-contiguous kernel (slow)
@@ -168,14 +261,12 @@ static void ggml_cuda_op_concat_impl(ggml_backend_cuda_context & ctx, ggml_tenso
 
         T * dst_d = (T *)dst->data;
 
-        const int elem_size = sizeof(T);
-
         if (dim != 3) {
             for (int i3 = 0; i3 < dst->ne[3]; i3++) {
                 concat_kernel_cuda(
-                        src0_d + i3 * (src0->nb[3] / elem_size),
-                        src1_d + i3 * (src1->nb[3] / elem_size),
-                        dst_d + i3 * ( dst->nb[3] / elem_size),
+                        src0_d + i3 * (src0->nb[3] / sizeof(T)),
+                        src1_d + i3 * (src1->nb[3] / sizeof(T)),
+                        dst_d + i3 * ( dst->nb[3] / sizeof(T)),
                         src0->ne[0], src0->ne[1], src0->ne[2],
                         dst->ne[0],  dst->ne[1],  dst->ne[2], dim, stream);
             }
@@ -184,12 +275,70 @@ static void ggml_cuda_op_concat_impl(ggml_backend_cuda_context & ctx, ggml_tenso
             const size_t size1 = ggml_nbytes(src1);
 
             CUDA_CHECK(cudaMemcpyAsync(dst_d,                src0_d, size0, cudaMemcpyDeviceToDevice, stream));
-            CUDA_CHECK(cudaMemcpyAsync(dst_d + size0/elem_size, src1_d, size1, cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(dst_d + size0/sizeof(T), src1_d, size1, cudaMemcpyDeviceToDevice, stream));
         }
     } else {
         dim3 grid_dim(dst->ne[1], dst->ne[2], dst->ne[3]);
         auto launch_kernel = [&](auto d) {
             concat_kernel_non_cont<T, d><<<grid_dim, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(
+                (const char *) src0->data, (const char *) src1->data, (char *) dst->data,
+                src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3],
+                src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3],
+                src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3],
+                src1->nb[0], src1->nb[1], src1->nb[2], src1->nb[3],
+                dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3],
+                dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3]);
+        };
+        switch (dim) {
+            case 0:
+                launch_kernel(std::integral_constant<int, 0>{});
+                break;
+            case 1:
+                launch_kernel(std::integral_constant<int, 1>{});
+                break;
+            case 2:
+                launch_kernel(std::integral_constant<int, 2>{});
+                break;
+            case 3:
+                launch_kernel(std::integral_constant<int, 3>{});
+                break;
+            default:
+                GGML_ABORT("Invalid dim: %d", dim);
+                break;
+        }
+    }
+}
+
+static void ggml_cuda_op_concat_impl_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const int32_t dim, cudaStream_t stream) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+
+    if (ggml_is_contiguous(src0) && ggml_is_contiguous(src1)) {
+        const __half * src0_d = (const __half *)src0->data;
+        const __half * src1_d = (const __half *)src1->data;
+
+        __half * dst_d = (__half *)dst->data;
+
+        if (dim != 3) {
+            for (int i3 = 0; i3 < dst->ne[3]; i3++) {
+                concat_f16_cuda(
+                        src0_d + i3 * (src0->nb[3] / sizeof(__half)),
+                        src1_d + i3 * (src1->nb[3] / sizeof(__half)),
+                        dst_d + i3 * ( dst->nb[3] / sizeof(__half)),
+                        src0->ne[0], src0->ne[1], src0->ne[2],
+                        dst->ne[0],  dst->ne[1],  dst->ne[2], dim, stream);
+            }
+        } else {
+            const size_t size0 = ggml_nbytes(src0);
+            const size_t size1 = ggml_nbytes(src1);
+
+            CUDA_CHECK(cudaMemcpyAsync(dst_d,                src0_d, size0, cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(dst_d + size0/sizeof(__half), src1_d, size1, cudaMemcpyDeviceToDevice, stream));
+        }
+    } else {
+        dim3 grid_dim(dst->ne[1], dst->ne[2], dst->ne[3]);
+        auto launch_kernel = [&](auto d) {
+            concat_kernel_non_cont<__half, d><<<grid_dim, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(
                 (const char *) src0->data, (const char *) src1->data, (char *) dst->data,
                 src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3],
                 src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3],
@@ -225,15 +374,9 @@ void ggml_cuda_op_concat(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
 
-    // All tensors must have the same type
-    GGML_ASSERT(src0->type == src1->type);
-    GGML_ASSERT(src0->type == dst->type);
-
-    if (dst->type == GGML_TYPE_F32) {
+    if (src0->type == GGML_TYPE_F32) {
         ggml_cuda_op_concat_impl<float>(ctx, dst, dim, stream);
-    } else if (dst->type == GGML_TYPE_F16) {
-        ggml_cuda_op_concat_impl<__half>(ctx, dst, dim, stream);
-    } else {
-        GGML_ASSERT(false && "Unsupported type for concat on CUDA");
+    } else if (src0->type == GGML_TYPE_F16) {
+        ggml_cuda_op_concat_impl_f16(ctx, dst, dim, stream);
     }
 }
