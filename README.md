@@ -1,20 +1,27 @@
-# DeepSeek v4 Flash experimental support
+# DeepSeek v4 Flash experimental CUDA support
 
-This is a fork of llama.cpp that implements DSv4 support, with generated GGUF that aims to target MacBooks with just 128GB of RAM using 2bit quantization of routed experts.
+This repository is a fork of [antirez/llama.cpp-deepseek-v4-flash](https://github.com/antirez/llama.cpp-deepseek-v4-flash) that enables CUDA support for DeepSeek V4 Flash.
 
-Disclaimer:
-* This code was written with heavy help from GPT 5.5 and the official DeepSeek v4 Flash as reference.
-* The model quantized in this way behaves very very well in the chat, frontier-model vibes, but it was not extensively tested.
-* The code runs both with CPU and Metal backends. With Metal is faster.
+The original fork adds DSv4 support and targets efficient GGUF inference. This fork extends it by implementing CUDA kernels for all four DSv4 operations:
 
-Download the GGUF from: https://huggingface.co/antirez/deepseek-v4-gguf
+- `DSV4_ROPE_TAIL`
+- `DSV4_HC_SPLIT_SINKHORN`
+- `DSV4_HC_EXPAND`
+- `DSV4_FP8_KV_QUANTIZE`
 
-Then to test it run with (but for production you may want to tune context, disable thinking for faster replies and so forth):
+These operations were also wired into the CUDA support and dispatch paths, fixing the previous CPU fallback behavior that caused excessive graph splits during inference.
+
+Current status:
+- All 4 DSv4 CUDA kernels implemented
+- CUDA dispatch enabled
+- Build completed successfully
+
+Original project: [antirez/llama.cpp-deepseek-v4-flash](https://github.com/antirez/llama.cpp-deepseek-v4-flash)
+
+Then to test it compile with cuda enable (tested on windows cuda 13.1) 
 
 ```
-llama-cli \
-    -m DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat.gguf \
-    -cnv
+llama-server.exe --model "C:\Users\EA\Downloads\DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat.gguf" --host 127.0.0.1 --port 8080 -c 8192 --n-gpu-layers 999 --parallel 1 --no-warmup --flash-attn on
 ```
 
 # llama.cpp
