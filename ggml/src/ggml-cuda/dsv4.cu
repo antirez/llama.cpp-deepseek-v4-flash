@@ -514,6 +514,26 @@ bool ggml_cuda_op_dsv4_hc_expand(ggml_backend_cuda_context & ctx, ggml_tensor * 
     return true;
 }
 
+bool ggml_cuda_op_dsv4_rope_tail_supported(void) {
+    // Supported: F32 input/output
+    return true;
+}
+
+bool ggml_cuda_op_dsv4_hc_split_sinkhorn_supported(void) {
+    // Placeholder - kernel not yet implemented
+    return false;
+}
+
+bool ggml_cuda_op_dsv4_hc_expand_supported(void) {
+    // Placeholder - kernel not yet implemented
+    return false;
+}
+
+bool ggml_cuda_op_dsv4_fp8_kv_quantize_supported(void) {
+    // Supported: F32 input/output
+    return true;
+}
+
 bool ggml_cuda_op_dsv4_fp8_kv_quantize(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
 
